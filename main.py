@@ -39,7 +39,7 @@ fan    = PWM(Pin(FAN_PIN),    freq=PWM_FREQ)
 
 try:
     from lcd_api import LcdApi
-    from i2c_lcd import I2cLcd
+    from machine_i2c_lcd import I2cLcd
     i2c      = SoftI2C(sda=Pin(SDA_PIN), scl=Pin(SCL_PIN), freq=400000)
     devices  = i2c.scan()
     lcd_addr = devices[0] if devices else 0x27
@@ -94,6 +94,9 @@ def push_to_supabase(temp, hum, pwm_h, pwm_f):
             data=payload,
             headers=headers
         )
+        print(f"[PUSH] Status: {r.status_code}")
+        if r.status_code != 201:
+            print(f"[PUSH] Response: {r.text}")
         r.close()
     except Exception as e:
         print(f"[WARN] Supabase push gagal: {e}")
@@ -134,11 +137,12 @@ def trapmf(x, a, b, c, d):
 
 def fuzz_error(error):
     return {
-        "NB": trapmf(error, -6.0, -4.0, -3.0, -2.0),
+        # Perlebar batas luar agar error ekstrem tetap tertangkap
+        "NB": trapmf(error, -8.0, -5.0, -3.0, -2.0),
         "NM": trimf (error, -3.0, -1.5,  0.0),
         "Z" : trimf (error, -1.0,  0.0,  1.0),
         "PM": trimf (error,  0.0,  1.5,  3.0),
-        "PB": trapmf(error,  2.0,  3.0,  4.0,  6.0),
+        "PB": trapmf(error,  2.0,  3.0,  5.0,  8.0),
     }
 
 def fuzz_delta(delta):
@@ -164,19 +168,19 @@ RULES = {
     # Suhu agak KURANG
     ("PM", "PF"): (3, 0),
     ("PM", "Z" ): (3, 0),
-    ("PM", "NF"): (1, 2),  # naik cepat → potong heater, fan bantu
+    ("PM", "NF"): (1, 2),
 
     # Suhu TEPAT
-    ("Z",  "PF"): (1, 1),  # masih naik → heater rendah
-    ("Z",  "Z" ): (1, 1),  # stabil → heater low, fan sirkulasi
-    ("Z",  "NF"): (0, 1),  # turun → heater off, pantau
+    ("Z",  "PF"): (1, 1),
+    ("Z",  "Z" ): (1, 1),
+    ("Z",  "NF"): (0, 1),
 
-    # Suhu agak LEBIH → heater off, fan buang panas
+    # Suhu agak LEBIH
     ("NM", "PF"): (1, 1),
     ("NM", "Z" ): (0, 2),
     ("NM", "NF"): (0, 2),
 
-    # Suhu jauh LEBIH → heater OFF, fan FULL
+    # Suhu jauh LEBIH
     ("NB", "PF"): (0, 2),
     ("NB", "Z" ): (0, 2),
     ("NB", "NF"): (0, 2),
@@ -254,6 +258,7 @@ def main():
     prev_error     = 0.0
     last_push_ms   = 0
     last_push_temp = 0.0
+    is_first_cycle = True  # fix delta siklus pertama
 
     connect_wifi()
 
@@ -279,7 +284,12 @@ def main():
         # 2. Hitung error & delta
         prev_error = error
         error      = SETPOINT - temp
-        delta      = error - prev_error
+
+        if is_first_cycle:
+            delta          = 0.0  # hindari spike delta +7 di siklus pertama
+            is_first_cycle = False
+        else:
+            delta = error - prev_error
 
         # 3. Fuzzy inference
         pwm_h, pwm_f = fuzzy_inference(error, delta)
