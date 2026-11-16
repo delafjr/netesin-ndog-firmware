@@ -13,22 +13,22 @@ import time
 # ─────────────────────────────────────────
 # KONSTANTA
 # ─────────────────────────────────────────
-SETPOINT         = 38.0   # °C suhu target inkubator
-EMERGENCY_T      = 42.0   # °C hard cutoff keselamatan telur
+SETPOINT         = 38.0
+EMERGENCY_T      = 42.0
 DHT_PIN          = 4
 HEATER_PIN       = 14
 FAN_PIN          = 5
 SDA_PIN          = 21
 SCL_PIN          = 22
-PWM_FREQ         = 1000   # Hz
-LOOP_DELAY_MS    = 2000   # ms per siklus
-PUSH_INTERVAL_MS = 5_000  # push ke Supabase tiap 5 detik
-PUSH_DELTA_T     = 0.3    # atau kalau suhu berubah > 0.3°C
+PWM_FREQ         = 1000
+LOOP_DELAY_MS    = 2000
+PUSH_INTERVAL_MS = 10_000  # push tiap 10 detik
+PUSH_DELTA_T     = 0.5     # atau kalau suhu berubah > 0.5°C
 
 SUPABASE_URL = "https://touuqnnovbguxzffoyic.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvdXVxbm5vdmJndXh6ZmZveWljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2Mzg1NzAsImV4cCI6MjExMDIxNDU3MH0.IYz9emwcybuB6gYYsRM7C1XtJ_PSV7HBrky-hO7Qmy0"
-WIFI_SSID    = "Mawar1"
-WIFI_PASS    = "mawar119"
+WIFI_SSID    = "antiwacana_2,4G"
+WIFI_PASS    = "mauwifian"
 
 # ─────────────────────────────────────────
 # INISIALISASI HARDWARE
@@ -36,6 +36,8 @@ WIFI_PASS    = "mawar119"
 sensor = dht.DHT22(Pin(DHT_PIN))
 heater = PWM(Pin(HEATER_PIN), freq=PWM_FREQ)
 fan    = PWM(Pin(FAN_PIN),    freq=PWM_FREQ)
+
+time.sleep_ms(500)  # tunggu LCD siap saat boot dari adaptor
 
 try:
     from lcd_api import LcdApi
@@ -55,7 +57,13 @@ except Exception as e:
 
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
+    
+    # Reset state dulu sebelum connect
+    wlan.active(False)
+    time.sleep_ms(300)
     wlan.active(True)
+    time.sleep_ms(300)
+    
     if wlan.isconnected():
         return True
     print("Connecting WiFi...")
@@ -75,6 +83,9 @@ def connect_wifi():
 # ─────────────────────────────────────────
 
 def push_to_supabase(temp, hum, pwm_h, pwm_f):
+    wlan = network.WLAN(network.STA_IF)
+    if not wlan.isconnected():
+        connect_wifi()
     try:
         payload = ujson.dumps({
             "suhu"    : temp,
@@ -137,7 +148,6 @@ def trapmf(x, a, b, c, d):
 
 def fuzz_error(error):
     return {
-        # Perlebar batas luar agar error ekstrem tetap tertangkap
         "NB": trapmf(error, -8.0, -5.0, -3.0, -2.0),
         "NM": trimf (error, -3.0, -1.5,  0.0),
         "Z" : trimf (error, -1.0,  0.0,  1.0),
@@ -258,7 +268,7 @@ def main():
     prev_error     = 0.0
     last_push_ms   = 0
     last_push_temp = 0.0
-    is_first_cycle = True  # fix delta siklus pertama
+    is_first_cycle = True
 
     connect_wifi()
 
@@ -286,7 +296,7 @@ def main():
         error      = SETPOINT - temp
 
         if is_first_cycle:
-            delta          = 0.0  # hindari spike delta +7 di siklus pertama
+            delta          = 0.0
             is_first_cycle = False
         else:
             delta = error - prev_error
@@ -301,7 +311,7 @@ def main():
         heater.duty(pwm_h)
         apply_fan(pwm_f)
 
-        # 6. Push ke Supabase (tiap 5s atau delta suhu > 0.3°C)
+        # 6. Push last value tiap 10 detik atau delta suhu > 0.5°C
         now_ms      = time.ticks_ms()
         interval_ok = time.ticks_diff(now_ms, last_push_ms) >= PUSH_INTERVAL_MS
         delta_ok    = abs(temp - last_push_temp) >= PUSH_DELTA_T
